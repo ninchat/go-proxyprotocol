@@ -1,105 +1,74 @@
 package proxyprotocol
 
 import (
+	"bufio"
 	"bytes"
-	"errors"
+	parser "github.com/racker/go-proxy-protocol"
 	"io"
 	"net"
 	"time"
 )
 
-var TODO = errors.New("TODO")
-
 type conn struct {
-	raw    net.Conn
-	remote net.Addr
+	raw   net.Conn
+	proxy *parser.ProxyLine
+	err   error
 }
 
-func (c *conn) init() (err error) {
-	if c.remote != nil {
+func (c *conn) init() {
+	if c.proxy != nil || c.err != nil {
 		return
 	}
 
-	// fallback
-	c.remote = c.raw.RemoteAddr()
-
+	// prepare for the longest (TCP6) line
 	buf := make([]byte, 107)
 
-	n, err := c.raw.Read(buf[:32])
-	if err != nil {
-		if err == io.EOF && n == 32 {
-			err = nil
-		} else {
-			return
-		}
+	// read at least the shortest (UNKNOWN) line
+	n, err := c.raw.Read(buf[:15])
+	if err != nil && !(err == io.EOF && n == 15) {
+		c.err = err
+		return
 	}
-	if n < 32 {
-		err = TODO
+	if n < 15 {
+		c.err = io.EOF
 		return
 	}
 
 	for i := n; i < len(buf); i++ {
 		if buf[i-2] == byte('\r') {
 			if buf[i-1] == byte('\n') {
-				buf = buf[:i-2]
+				buf = buf[:i]
 				break
 			} else {
-				err = TODO
+				c.err = parser.InvalidProxyLine
 				return
 			}
 		}
 
-		n, err = c.raw.Read(buf[i:i+1])
-		if err != nil {
+		n, c.err = c.raw.Read(buf[i : i+1])
+		if c.err != nil {
 			return
 		}
 		if n != 1 {
-			err = TODO
+			c.err = io.EOF
 			return
 		}
 	}
 
-	if !bytes.HasPrefix(buf, []byte("PROXY ")) {
-		err = TODO
-		return
-	}
-	buf = buf[6:]
-
-	var addr  addr
-	var delim byte
-
-	if bytes.HasPrefix(buf, []byte("TCP4 ")) {
-		addr.network = "tcp4"
-		delim = byte('.')
-	} else if bytes.HasPrefix(buf, []byte("TCP6 ")) {
-		addr.network = "tcp6"
-		delim = byte(':')
-	} else {
-		if !bytes.HasPrefix(buf, []byte("UNKNOWN ")) {
-			err = TODO
-		}
-		return
-	}
-	buf = buf[5:]
-
-	i := bytes.IndexByte(buf, byte(' '))
-	if i < 7 {
-		err = TODO
-		return
-	}
-	addr.address = string(buf[:i])
-	if bytes.IndexByte(buf[:i], delim) < 0 || net.ParseIP(addr.address) == nil {
-		err = TODO
+	if bytes.HasPrefix(buf, []byte("PROXY UNKNOWN")) {
+		c.proxy = new(parser.ProxyLine)
 		return
 	}
 
-	c.remote = &addr
+	c.proxy, c.err = parser.ConsumeProxyLine(bufio.NewReader(bytes.NewReader(buf)))
 	return
 }
 
 func (c *conn) Read(b []byte) (n int, err error) {
-	err = c.init()
-	if err == nil {
+	c.init()
+	if c.err != nil {
+		err = c.err
+	} else {
 		n, err = c.raw.Read(b)
 	}
 	return
@@ -115,12 +84,19 @@ func (c *conn) Close() error {
 }
 
 func (c *conn) LocalAddr() net.Addr {
+	c.init()
+	if c.err == nil && c.proxy.DstAddr != nil {
+		return c.proxy.DstAddr
+	}
 	return c.raw.LocalAddr()
 }
 
 func (c *conn) RemoteAddr() net.Addr {
 	c.init()
-	return c.remote
+	if c.err == nil && c.proxy.SrcAddr != nil {
+		return c.proxy.SrcAddr
+	}
+	return c.raw.RemoteAddr()
 }
 
 func (c *conn) SetDeadline(t time.Time) error {

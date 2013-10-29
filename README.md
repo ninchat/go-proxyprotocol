@@ -1,5 +1,7 @@
-Partial PROXY protocol version 1 (server-end) support for Go.
+PROXY protocol version 1 (server-end) support for Go.
 <http://haproxy.1wt.eu/download/1.5/doc/proxy-protocol.txt>
+
+Requires <https://github.com/racker/go-proxy-protocol>
 
 	package example
 
