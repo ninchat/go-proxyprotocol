@@ -61,6 +61,9 @@ func (c *conn) init() {
 	}
 
 	c.proxy, c.err = parser.ConsumeProxyLine(bufio.NewReader(bytes.NewReader(buf)))
+	if c.proxy == nil && c.err == nil {
+		c.err = parser.InvalidProxyLine
+	}
 	return
 }
 
